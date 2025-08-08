@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Live Temperature Monitor</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        thead, tbody tr {
+            display: table;
+            width: 100%;
+            table-layout: fixed;
+        }
+
+        thead {
+            width: calc(100% - 1em); /* scrollbar width compensation */
+        }
+
+        /* Container holding card and chart side-by-side */
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 2rem;
+            justify-content: center;
+            align-items: stretch;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            padding: 2rem;
+            text-align: center;
+            flex: 0 0 300px;
+            height: fit-content;
+        }
+
+        .temp {
+            font-size: 4rem;
+            margin: 0.5rem 0;
+        }
+
+        .time {
+            color: #888;
+            font-size: 1rem;
+        }
+
+        #chart {
+            flex: 1 1 500px;
+            min-width: 300px;
+            height: 400px;
+            background: white;
+            border-radius: 8px;
+            padding: 1rem;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        th, td {
+            padding: 12px 16px;
+            text-align: center;
+            border-bottom: 1px solid #eee;
+        }
+
+        th {
+            background: #f0f0f0;
+        }
+
+        #alert button {
+            position: absolute;
+            top: 0.25rem;
+            right: 0.5rem;
+            background: transparent;
+            border: none;
+            font-size: 1.2rem;
+            color: white;
+            cursor: pointer;
+        }
+
+    </style>
+</head>
+<body>
+
+<div class="row">
+    <div class="card">
+        <h2>🌡️ Live Temperature</h2>
+        <div class="temp" id="temperature">-- °C</div>
+        <div class="time" id="timestamp">Waiting for data...</div>
+    </div>
+
+    <div id="chart"></div>
+</div>
+
+<h3 style="text-align:center; margin-top: 2rem;">🚨 Alerts Log</h3>
+<div class="row">
+    <table>
+        <thead>
+        <tr>
+            <th style="width: 50px;">#</th>
+            <th style="width: 150px;">Temperature (°C)</th>
+            <th style="width: 150px;">Time</th>
+            <th>Message</th>
+        </tr>
+        </thead>
+        <tbody id="alerts-log" style="display: block; max-height: 200px; overflow-y: auto;">
+        <!-- Alert rows go here -->
+        </tbody>
+    </table>
+
+    <table>
+        <thead>
+        <tr>
+            <th style="width: 50px;">#</th>
+            <th style="width: 150px;">Temperature (°C)</th>
+            <th style="width: 150px;">Time</th>
+        </tr>
+        </thead>
+        <tbody id="log" style="display: block; max-height: 300px; overflow-y: auto;">
+        <!-- Rows will be appended here -->
+        </tbody>
+    </table>
+</div>
+
+
+<script>
+    const socket = io('http://localhost:3000');
+    const maxPoints = 10000;
+
+    let counter = 0;
+    const temperatureData = [];
+    const timeData = [];
+
+    const tempElement = document.getElementById('temperature');
+    const timeElement = document.getElementById('timestamp');
+    const logTable = document.getElementById('log');
+
+    const alertsLogTable = document.getElementById('alerts-log');
+    let alertCounter = 0;
+    const ALERT_THRESHOLD = 40; // same as before
+
+    const chart = echarts.init(document.getElementById('chart'));
+    const option = {
+        title: {
+            text: 'Live Temperature (°C)',
+            left: '1%'
+        },
+        tooltip: {
+            trigger: 'axis'
+        },
+        grid: {
+            left: '5%',
+            right: '15%',
+            bottom: '10%'
+        },
+        xAxis: {
+            type: 'category',
+            data: [],
+            name: 'Time',
+            boundaryGap: false
+        },
+        yAxis: {
+            type: 'value',
+            name: '°C'
+        },
+        toolbox: {
+            right: 10,
+            feature: {
+                dataZoom: {
+                    yAxisIndex: 'none'
+                },
+                restore: {},
+                saveAsImage: {}
+            }
+        },
+        dataZoom: [
+            {
+                start: 0,
+                end: 100
+            },
+            {
+                type: 'inside'
+            }
+        ],
+        visualMap: {
+            top: 50,
+            right: 10,
+            pieces: [
+                {gt: 0, lte: 20, color: '#93CE07'},
+                {gt: 20, lte: 30, color: '#FBDB0F'},
+                {gt: 30, lte: 40, color: '#FC7D02'},
+                {gt: 40, lte: 50, color: '#FD0100'},
+                {gt: 50, color: '#AC3B2A'}
+            ],
+            outOfRange: {
+                color: '#999'
+            }
+        },
+        series: {
+            name: 'Temperature',
+            type: 'line',
+            data: [],
+            smooth: true,
+            markLine: {
+                silent: true,
+                lineStyle: {color: '#333'},
+                data: [
+                    {yAxis: 20},
+                    {yAxis: 30},
+                    {yAxis: 40},
+                    {yAxis: 50}
+                ]
+            }
+        }
+    };
+
+    chart.setOption(option);
+
+    socket.on('temperature', (data) => {
+        const {temperature, timestamp} = data;
+        const timeStr = new Date(timestamp).toLocaleTimeString();
+
+        // UI update
+        tempElement.textContent = `${temperature} °C`;
+        timeElement.textContent = `Updated at: ${timeStr}`;
+
+
+        // Log table
+        const row = document.createElement('tr');
+        row.innerHTML = `
+        <td>${++counter}</td>
+        <td>${temperature}</td>
+        <td>${timeStr}</td>
+      `;
+        logTable.prepend(row);
+
+        // Alert log table
+        if (temperature > ALERT_THRESHOLD) {
+            alertCounter++;
+            const alertRow = document.createElement('tr');
+            alertRow.innerHTML = `
+      <td>${alertCounter}</td>
+      <td style="color: #d93025; font-weight: bold;">${temperature}</td>
+      <td>${timeStr}</td>
+      <td>Temperature exceeded threshold of ${ALERT_THRESHOLD} °C</td>
+    `;
+            alertsLogTable.prepend(alertRow);
+        }
+
+
+        // Keep data bounded
+        if (temperatureData.length >= maxPoints) {
+            temperatureData.shift();
+            timeData.shift();
+        }
+
+        // Push to chart
+        temperatureData.push(temperature);
+        timeData.push(timeStr);
+
+        chart.setOption({
+            xAxis: {data: timeData},
+            series: [{data: temperatureData}]
+        });
+    });
+</script>
+</body>
+</html>
