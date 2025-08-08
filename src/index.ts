@@ -5,7 +5,7 @@ const fastify = Fastify({logger: true});
 
 fastify.register(LiveServer)
 
-fastify.listen({port: 3000, host: '0.0.0.0'}, async (err, address) => {
+fastify.listen({port: Number(process.env.PORT) || 4000, host: '0.0.0.0'}, async (err, address) => {
     if (err) {
         console.log(err);
         console.error(err);
